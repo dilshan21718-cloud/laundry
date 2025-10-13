@@ -120,6 +120,11 @@ const Book = () => {
   const [instructions, setInstructions] = useState("");
   const [donationPickup, setDonationPickup] = useState(false);
   const [trackCode, setTrackCode] = useState("");
+  const [loyaltyPoints, setLoyaltyPoints] = useState(0);
+  const [useLoyaltyPoints, setUseLoyaltyPoints] = useState(false);
+  const [paymentModalOpen, setPaymentModalOpen] = useState(false);
+  const [paymentOption, setPaymentOption] = useState<"now" | "after">("after");
+  
   // Generate a new code on every page load
   function generateRandomCode(length = 12) {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -132,6 +137,24 @@ const Book = () => {
 
   useEffect(() => {
     setTrackCode(generateRandomCode(12));
+    // Fetch user's loyalty points
+    const fetchLoyaltyPoints = async () => {
+      try {
+        const orders = await api.bookings.mine();
+        const totalSpent = (orders || []).reduce((sum: number, order: any) => sum + (order.totalAmount || order.amount || 0), 0);
+        const earnedPoints = Math.floor(totalSpent / 10);
+        
+        // Calculate total used loyalty points
+        const usedPoints = (orders || []).reduce((sum: number, order: any) => sum + (order.loyaltyPointsUsed || 0), 0);
+        
+        // Available points = earned - used
+        const availablePoints = Math.max(0, earnedPoints - usedPoints);
+        setLoyaltyPoints(availablePoints);
+      } catch (e) {
+        setLoyaltyPoints(0);
+      }
+    };
+    fetchLoyaltyPoints();
   }, []);
   const [copied, setCopied] = useState(false);
   const navigate = useNavigate();
@@ -170,10 +193,44 @@ const Book = () => {
     );
   };
 
+  const getFinalAmount = () => {
+    const baseAmount = calculatePrice();
+    if (useLoyaltyPoints && loyaltyPoints > 0) {
+      // Assuming 1 loyalty point = ₹1 discount
+      const discount = Math.min(loyaltyPoints, baseAmount); // Can't exceed total amount
+      return Math.max(0, baseAmount - discount);
+    }
+    return baseAmount;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!selectedService) {
+      alert("Please select a service");
+      return;
+    }
+    if (!pickupDate || !deliveryDate) {
+      alert("Please select pickup and delivery dates");
+      return;
+    }
+    if (!address) {
+      alert("Please enter your address");
+      return;
+    }
+    
+    // If user selected "Pay After Delivery", create booking directly
+    if (paymentOption === "after") {
+      await createBookingWithoutPayment();
+    } else {
+      // If "Pay Now", show payment modal
+      setPaymentModalOpen(true);
+    }
+  };
+
+  const createBookingWithoutPayment = async () => {
     setCopied(false);
     sessionStorage.setItem("laundrybuddy_last_track_code", trackCode);
+    
     const booking = {
       id: trackCode,
       service: services.find(s => s.id === selectedService)?.name || "",
@@ -208,14 +265,12 @@ const Book = () => {
       paymentStatus: "pending",
       instructions,
       donationPickup,
-      assignedStaff: {
-        name: "Laundry Staff",
-        phone: "",
-        vehicle: ""
-      }
+      assignedStaff: undefined
     } as any;
+    
     try {
       await api.bookings.create(booking);
+      alert("Booking confirmed! Payment will be collected after delivery.");
       navigate("/track");
     } catch (err: any) {
       const message = String(err?.message || "Failed to create booking");
@@ -225,6 +280,94 @@ const Book = () => {
         return;
       }
       alert(message);
+    }
+  };
+
+  const processPaymentAndBooking = async () => {
+    setCopied(false);
+    sessionStorage.setItem("laundrybuddy_last_track_code", trackCode);
+    
+    const finalAmount = getFinalAmount();
+    
+    // Razorpay payment options
+    const options = {
+      key: "rzp_test_RN5RT3SpBDWrqZ", // Razorpay test key
+      amount: finalAmount * 100, // Razorpay expects amount in paise
+      currency: "INR",
+      name: "CleanWave Laundry",
+      description: `${services.find(s => s.id === selectedService)?.name || "Laundry Service"}`,
+      image: "/favicon.svg",
+      handler: async function (response: any) {
+        // Payment successful
+        const booking = {
+          id: trackCode,
+          service: services.find(s => s.id === selectedService)?.name || "",
+          quantity: `${pricingType === "kg" ? sumKg() + ' kg' : sumPieces() + ' pcs'}`,
+          pricingType: pricingType === 'kg' ? 'kg' : 'pcs',
+          status: "accepted",
+          estimatedDelivery: deliveryDate ? `${format(deliveryDate, "PPP")}, ${deliveryTime}` : "",
+          pickupTime,
+          deliveryTime,
+          pickupAddress: address,
+          deliveryAddress: address,
+          items: (
+            pricingType === 'kg'
+              ? [
+                  { name: 'Shirt', quantity: kgCounts.shirt, unitPrice: 0, amount: 0 },
+                  { name: 'Pant', quantity: kgCounts.pant, unitPrice: 0, amount: 0 },
+                  { name: 'T-Shirt', quantity: kgCounts.tshirt, unitPrice: 0, amount: 0 },
+                  { name: 'Lower', quantity: kgCounts.lower, unitPrice: 0, amount: 0 },
+                  { name: 'Innerwear', quantity: kgCounts.innerwear, unitPrice: 0, amount: 0 },
+                  { name: 'Others', quantity: kgCounts.others, unitPrice: 0, amount: 0 },
+                ].filter(i => i.quantity > 0)
+              : [
+                  { name: 'Shirt', quantity: pieces.shirt, unitPrice: getUnitPrice('shirt'), amount: (pieces.shirt || 0) * getUnitPrice('shirt') },
+                  { name: 'Pant', quantity: pieces.pant, unitPrice: getUnitPrice('pant'), amount: (pieces.pant || 0) * getUnitPrice('pant') },
+                  { name: 'T-Shirt', quantity: pieces.tshirt, unitPrice: getUnitPrice('tshirt'), amount: (pieces.tshirt || 0) * getUnitPrice('tshirt') },
+                  { name: 'Lower', quantity: pieces.lower, unitPrice: getUnitPrice('lower'), amount: (pieces.lower || 0) * getUnitPrice('lower') },
+                  { name: 'Innerwear', quantity: pieces.innerwear, unitPrice: getUnitPrice('innerwear'), amount: (pieces.innerwear || 0) * getUnitPrice('innerwear') },
+                  { name: 'Others', quantity: pieces.others, unitPrice: getUnitPrice('others'), amount: (pieces.others || 0) * getUnitPrice('others') },
+                ].filter(i => i.quantity > 0)
+          ),
+          totalAmount: finalAmount,
+          paymentStatus: "paid",
+          paymentId: response.razorpay_payment_id,
+          loyaltyPointsUsed: useLoyaltyPoints ? Math.min(loyaltyPoints, calculatePrice()) : 0,
+          instructions,
+          donationPickup,
+          assignedStaff: undefined
+        } as any;
+        try {
+          await api.bookings.create(booking);
+          setPaymentModalOpen(false);
+          alert("Payment successful! Booking confirmed.");
+          navigate("/track");
+        } catch (err: any) {
+          const message = String(err?.message || "Failed to create booking");
+          alert(message);
+        }
+      },
+      prefill: {
+        name: username,
+        email: "",
+        contact: ""
+      },
+      theme: {
+        color: "#7c3aed"
+      },
+      modal: {
+        ondismiss: function() {
+          setPaymentModalOpen(false);
+        }
+      }
+    };
+
+    try {
+      const razorpay = new (window as any).Razorpay(options);
+      razorpay.open();
+    } catch (err: any) {
+      alert("Payment gateway error. Please try again.");
+      setPaymentModalOpen(false);
     }
   };
 
@@ -534,6 +677,69 @@ const Book = () => {
             </CardContent>
           </Card>
 
+          {/* Payment Option */}
+          <Card className="shadow-soft animate-slide-up">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                Payment Option
+              </CardTitle>
+              <CardDescription>
+                Choose when you want to make the payment
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                <div 
+                  className={`flex items-start gap-3 p-4 border-2 rounded-lg cursor-pointer transition-all ${
+                    paymentOption === "after" ? "border-primary bg-primary/5" : "border-gray-200 hover:border-primary/50"
+                  }`}
+                  onClick={() => setPaymentOption("after")}
+                >
+                  <input
+                    type="radio"
+                    id="pay-after"
+                    name="payment-option"
+                    checked={paymentOption === "after"}
+                    onChange={() => setPaymentOption("after")}
+                    className="mt-1"
+                  />
+                  <div className="flex-1">
+                    <Label htmlFor="pay-after" className="font-semibold cursor-pointer">
+                      Pay After Delivery
+                    </Label>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      Complete your booking now and pay when your order is delivered. Payment status will be marked as pending.
+                    </p>
+                  </div>
+                </div>
+                
+                <div 
+                  className={`flex items-start gap-3 p-4 border-2 rounded-lg cursor-pointer transition-all ${
+                    paymentOption === "now" ? "border-primary bg-primary/5" : "border-gray-200 hover:border-primary/50"
+                  }`}
+                  onClick={() => setPaymentOption("now")}
+                >
+                  <input
+                    type="radio"
+                    id="pay-now"
+                    name="payment-option"
+                    checked={paymentOption === "now"}
+                    onChange={() => setPaymentOption("now")}
+                    className="mt-1"
+                  />
+                  <div className="flex-1">
+                    <Label htmlFor="pay-now" className="font-semibold cursor-pointer">
+                      Pay Now
+                    </Label>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      Pay securely using Razorpay. Your booking will be confirmed only after successful payment. You can also use loyalty points for discounts.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
           {/* Submit Button */}
           <div className="flex justify-center">
             <Button
@@ -543,10 +749,69 @@ const Book = () => {
               className="px-8 animate-bounce-gentle"
               disabled={!selectedService || !pickupDate || !deliveryDate || !address}
             >
-              Book Service - ₹{calculatePrice()}
+              {paymentOption === "now" ? `Pay Now - ₹${calculatePrice()}` : `Book Service - ₹${calculatePrice()}`}
             </Button>
           </div>
         </form>
+
+        {/* Payment Modal */}
+        {paymentModalOpen && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+            <Card className="w-full max-w-md mx-4">
+              <CardHeader>
+                <CardTitle>Payment Summary</CardTitle>
+                <CardDescription>Review your order and complete payment</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <div className="flex justify-between">
+                    <span>Service:</span>
+                    <span className="font-semibold">{services.find(s => s.id === selectedService)?.name}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Base Amount:</span>
+                    <span className="font-semibold">₹{calculatePrice()}</span>
+                  </div>
+                  {loyaltyPoints > 0 && (
+                    <div className="border-t pt-2">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm">Available Loyalty Points:</span>
+                        <span className="font-semibold text-primary">{loyaltyPoints} points</span>
+                      </div>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={useLoyaltyPoints}
+                          onChange={(e) => setUseLoyaltyPoints(e.target.checked)}
+                          className="w-4 h-4"
+                        />
+                        <span className="text-sm">Use loyalty points (₹1 = 1 point)</span>
+                      </label>
+                      {useLoyaltyPoints && (
+                        <div className="flex justify-between mt-2 text-green-600">
+                          <span>Discount:</span>
+                          <span className="font-semibold">- ₹{Math.min(loyaltyPoints, calculatePrice())}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <div className="border-t pt-2 flex justify-between text-lg font-bold">
+                    <span>Total Amount:</span>
+                    <span className="text-primary">₹{getFinalAmount()}</span>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={() => setPaymentModalOpen(false)} className="flex-1">
+                    Cancel
+                  </Button>
+                  <Button onClick={processPaymentAndBooking} className="flex-1">
+                    Pay ₹{getFinalAmount()}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
       </div>
     </div>
   );

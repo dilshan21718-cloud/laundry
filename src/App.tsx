@@ -11,6 +11,7 @@ import Book from "./pages/Book";
 import Track from "./pages/Track";
 import Account from "./pages/Account";
 import Admin from "./pages/Admin";
+import StaffDashboard from "./pages/StaffDashboard";
 import NotFound from "./pages/NotFound";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
@@ -35,9 +36,15 @@ function AppRoutes() {
         navigate("/admin", { replace: true });
       }
     }
-    // If user, block /admin
+    // If staff, only allow /staff (staff dashboard), /login, /signup
+    if (loggedInType === "staff") {
+      if (location.pathname !== "/staff" && location.pathname !== "/login" && location.pathname !== "/signup") {
+        navigate("/staff", { replace: true });
+      }
+    }
+    // If user, block /admin and /staff
     if (loggedInType === "user") {
-      if (location.pathname === "/admin") {
+      if (location.pathname === "/admin" || location.pathname === "/staff") {
         navigate("/", { replace: true });
       }
     }
@@ -52,6 +59,13 @@ function AppRoutes() {
           <Route path="/signup" element={<Signup />} />
           <Route path="*" element={<Admin />} />
         </>
+      ) : loggedInType === "staff" ? (
+        <>
+          <Route path="/staff" element={<StaffDashboard />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/signup" element={<Signup />} />
+          <Route path="*" element={<StaffDashboard />} />
+        </>
       ) : (
         <>
           <Route path="/" element={<Index />} />
@@ -61,6 +75,7 @@ function AppRoutes() {
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
           <Route path="/admin" element={<NotFound />} />
+          <Route path="/staff" element={<NotFound />} />
           <Route path="*" element={<NotFound />} />
         </>
       )}

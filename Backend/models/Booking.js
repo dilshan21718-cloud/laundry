@@ -30,9 +30,9 @@ const BookingSchema = new mongoose.Schema(
     totalAmount: { type: Number, required: true },
     paymentStatus: { type: String, enum: ['pending', 'paid'], default: 'pending' },
     assignedStaff: {
-      name: { type: String, default: 'Laundry Staff' },
-      phone: { type: String, default: '' },
-      vehicle: { type: String, default: '' },
+      name: { type: String },
+      phone: { type: String },
+      vehicle: { type: String },
     },
   },
   { timestamps: true }

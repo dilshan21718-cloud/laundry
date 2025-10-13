@@ -25,6 +25,10 @@ const Header = () => {
     navItems = [
       { path: "/admin", label: "Admin", icon: BarChart3 },
     ];
+  } else if (loggedInType === "staff") {
+    navItems = [
+      { path: "/staff", label: "Staff Dashboard", icon: BarChart3 },
+    ];
   } else {
     navItems = [
       { path: "/", label: "Home", icon: Shirt },

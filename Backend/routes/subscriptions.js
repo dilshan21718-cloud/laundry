@@ -4,6 +4,7 @@ const Booking = require('../models/Booking');
 const auth = require('../middleware/auth');
 
 const router = express.Router();
+const adminOnly = require('../middleware/admin');
 
 const monthKeyOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 const genId = () => {
@@ -11,6 +12,12 @@ const genId = () => {
   let result = 'LB';
   for (let i = 0; i < 12; i++) result += chars[Math.floor(Math.random() * chars.length)];
   return result;
+};
+const genSubCode = () => {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let s = 'SUB-';
+  for (let i = 0; i < 8; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return s;
 };
 
 // GET /api/subscriptions/mine - list current month's subscriptions for logged-in user
@@ -25,29 +32,130 @@ router.get('/mine', auth, async (req, res) => {
   }
 });
 
+// GET /api/subscriptions/history - list all subscriptions for the user (all months)
+router.get('/history', auth, async (req, res) => {
+  try {
+    const subs = await Subscription.find({ userId: req.user.id }).sort({ createdAt: -1 }).lean();
+    res.json(subs);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// GET /api/subscriptions/admin/all - list all subscriptions (admin only)
+router.get('/admin/all', auth, adminOnly, async (req, res) => {
+  try {
+    const subs = await Subscription.find({}).sort({ createdAt: -1 }).lean();
+    res.json(subs);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+const calcDailyRuns = (startDate) => {
+  // Generate daily dates from startDate inclusive up to one month ahead
+  const start = new Date(new Date(startDate).setHours(0,0,0,0));
+  const end = new Date(start);
+  end.setMonth(end.getMonth() + 1); // one month window
+  const dates = [];
+  let cur = new Date(start);
+  while (cur < end) {
+    dates.push(new Date(cur));
+    cur.setDate(cur.getDate() + 1);
+  }
+  return dates;
+};
+
 const calcMonthlyRuns = (dayOfWeek, startDate) => {
-  const d = new Date(startDate);
-  const year = d.getFullYear();
-  const month = d.getMonth();
-  const first = new Date(year, month, 1);
-  const last = new Date(year, month + 1, 0);
-  // go to first desired weekday on/after start
-  let cur = new Date(Math.max(first.getTime(), new Date(startDate).setHours(0,0,0,0)));
+  // Generate weekly dates from startDate inclusive up to one month ahead (spanning month boundary)
+  const start = new Date(new Date(startDate).setHours(0,0,0,0));
+  const end = new Date(start);
+  end.setMonth(end.getMonth() + 1); // one month window
+  // move cur to the first desired weekday on/after start
+  let cur = new Date(start);
   while (cur.getDay() !== dayOfWeek) {
     cur.setDate(cur.getDate() + 1);
   }
   const dates = [];
-  while (cur <= last) {
+  while (cur < end) {
     dates.push(new Date(cur));
     cur.setDate(cur.getDate() + 7);
   }
   return dates;
 };
 
+// POST /api/subscriptions/daily-pickup - create daily subscription
+router.post('/daily-pickup', auth, async (req, res) => {
+  try {
+    const { startDate, pickupTime, pickupAddress, deliveryAddress, notes } = req.body || {};
+    const start = startDate ? new Date(startDate) : new Date();
+    const monthKey = monthKeyOf(start);
+
+    // ensure unique per user-kind-month
+    const existing = await Subscription.findOne({ userId: req.user.id, kind: 'daily_pickup', monthKey });
+    if (existing) {
+      // Update existing daily subscription
+      existing.startDate = start;
+      existing.notes = notes || '';
+      existing.pickupTime = pickupTime || '';
+      const runsUpd = calcDailyRuns(start);
+      existing.runs = runsUpd;
+      existing.runStates = runsUpd.map((dt) => ({ date: dt, status: 'scheduled' }));
+      const nextUpd = (existing.runStates || []).find(rs => rs.status === 'scheduled');
+      existing.nextRun = nextUpd ? nextUpd.date : null;
+      await existing.save();
+      return res.status(200).json(existing);
+    }
+
+    // Create a minimal booking for the month
+    const id = genId();
+    const booking = new Booking({
+      id,
+      userId: req.user.id,
+      service: 'Daily clean subscription',
+      quantity: 'subscription',
+      pricingType: 'kg',
+      status: 'accepted',
+      estimatedDelivery: '',
+      pickupTime: '',
+      deliveryTime: '',
+      pickupAddress: pickupAddress || req.user?.address || 'Address on file',
+      deliveryAddress: deliveryAddress || req.user?.address || 'Address on file',
+      items: [],
+      instructions: notes || 'Daily pickup subscription',
+      donationPickup: false,
+      totalAmount: 0,
+      paymentStatus: 'pending',
+    });
+    await booking.save();
+
+    const runs = calcDailyRuns(start);
+    const runStates = runs.map((dt) => ({ date: dt, status: 'scheduled' }));
+    const sub = await Subscription.create({
+      code: genSubCode(),
+      userId: req.user.id,
+      kind: 'daily_pickup',
+      dayOfWeek: 0, // not used for daily
+      startDate: start,
+      monthKey,
+      createdBookingId: id,
+      notes: notes || '',
+      pickupTime: pickupTime || '',
+      runs,
+      nextRun: runs && runs.length ? runs[0] : null,
+      runStates,
+    });
+
+    res.status(201).json(sub);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // POST /api/subscriptions/weekly-pickup - create one subscription per month and one booking for this month if not exists
 router.post('/weekly-pickup', auth, async (req, res) => {
   try {
-    const { dayOfWeek, startDate, pickupAddress, deliveryAddress, notes } = req.body || {};
+    const { dayOfWeek, startDate, pickupTime, pickupAddress, deliveryAddress, notes } = req.body || {};
     if (typeof dayOfWeek !== 'number' || dayOfWeek < 0 || dayOfWeek > 6) {
       return res.status(400).json({ message: 'dayOfWeek must be 0-6 (0=Sunday)' });
     }
@@ -56,7 +164,20 @@ router.post('/weekly-pickup', auth, async (req, res) => {
 
     // ensure unique per user-kind-month
     const existing = await Subscription.findOne({ userId: req.user.id, kind: 'weekly_pickup', monthKey });
-    if (existing) return res.status(200).json(existing);
+    if (existing) {
+      // Update existing subscription when user clicks Update
+      existing.dayOfWeek = dayOfWeek;
+      existing.startDate = start;
+      existing.notes = notes || '';
+      existing.pickupTime = pickupTime || '';
+      const runsUpd = calcMonthlyRuns(dayOfWeek, start);
+      existing.runs = runsUpd;
+      existing.runStates = runsUpd.map((dt) => ({ date: dt, status: 'scheduled' }));
+      const nextUpd = (existing.runStates || []).find(rs => rs.status === 'scheduled');
+      existing.nextRun = nextUpd ? nextUpd.date : null;
+      await existing.save();
+      return res.status(200).json(existing);
+    }
 
     // Create a minimal booking for the month (admin can update later)
     const id = genId();
@@ -77,13 +198,14 @@ router.post('/weekly-pickup', auth, async (req, res) => {
       donationPickup: false,
       totalAmount: 0,
       paymentStatus: 'pending',
-      assignedStaff: { name: 'Laundry Staff', phone: '', vehicle: '' },
+      // leave unassigned by default
     });
     await booking.save();
 
     const runs = calcMonthlyRuns(dayOfWeek, start);
     const runStates = runs.map((dt) => ({ date: dt, status: 'scheduled' }));
     const sub = await Subscription.create({
+      code: genSubCode(),
       userId: req.user.id,
       kind: 'weekly_pickup',
       dayOfWeek,
@@ -91,6 +213,7 @@ router.post('/weekly-pickup', auth, async (req, res) => {
       monthKey,
       createdBookingId: id,
       notes: notes || '',
+      pickupTime: pickupTime || '',
       runs,
       nextRun: runs && runs.length ? runs[0] : null,
       runStates,
@@ -156,7 +279,7 @@ router.post('/:id/generate-next', auth, async (req, res) => {
       donationPickup: false,
       totalAmount: 0,
       paymentStatus: 'pending',
-      assignedStaff: { name: 'Laundry Staff', phone: '', vehicle: '' },
+      // leave unassigned by default
     });
     await booking.save();
 
@@ -170,11 +293,24 @@ router.post('/:id/generate-next', auth, async (req, res) => {
       monthKey,
       createdBookingId: idCode,
       notes: base.notes || '',
+      pickupTime: base.pickupTime || '',
       runs,
       runStates,
       nextRun: runs && runs.length ? runs[0] : null,
     });
     res.status(201).json(sub);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Delete a subscription
+router.delete('/:id', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const deleted = await Subscription.findOneAndDelete({ _id: id, userId: req.user.id });
+    if (!deleted) return res.status(404).json({ message: 'Subscription not found' });
+    res.json({ message: 'Subscription deleted' });
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
   }

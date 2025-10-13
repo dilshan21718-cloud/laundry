@@ -23,7 +23,13 @@ const Login = () => {
       localStorage.setItem("laundrybuddy_token", res.token);
       localStorage.setItem("laundrybuddy_loggedin_type", res.user.userType);
       alert("Logged in!");
-      navigate(res.user.userType === "admin" ? "/admin" : "/account");
+      if (res.user.userType === "admin") {
+        navigate("/admin");
+      } else if (res.user.userType === "staff") {
+        navigate("/staff");
+      } else {
+        navigate("/account");
+      }
     } catch (err: any) {
       setError(err.message || "Login failed");
     }
@@ -44,6 +50,7 @@ const Login = () => {
             >
               <option value="user">User</option>
               <option value="admin">Admin</option>
+              <option value="staff">Delivery Staff</option>
             </select>
           </div>
           <div>

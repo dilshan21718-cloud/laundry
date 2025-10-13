@@ -52,7 +52,11 @@ export const api = {
   },
   subscriptions: {
     mine: () => request('/api/subscriptions/mine', { method: 'GET' }),
-    weeklyPickup: (data: any) => request('/api/subscriptions/weekly-pickup', { method: 'POST', body: JSON.stringify(data) })
+    history: () => request('/api/subscriptions/history', { method: 'GET' }),
+    adminAll: () => request('/api/subscriptions/admin/all', { method: 'GET' }),
+    weeklyPickup: (data: any) => request('/api/subscriptions/weekly-pickup', { method: 'POST', body: JSON.stringify(data) }),
+    dailyPickup: (data: any) => request('/api/subscriptions/daily-pickup', { method: 'POST', body: JSON.stringify(data) }),
+    delete: (id: string) => request(`/api/subscriptions/${id}`, { method: 'DELETE' })
   }
 };
 
