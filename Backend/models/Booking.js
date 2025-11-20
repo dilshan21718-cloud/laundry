@@ -9,7 +9,7 @@ const BookingSchema = new mongoose.Schema(
     pricingType: { type: String, enum: ['kg', 'pcs'], default: 'kg' },
     status: {
       type: String,
-      enum: ['accepted', 'picked', 'washing', 'ready', 'delivery', 'delivered'],
+      enum: ['accepted', 'picked', 'washing', 'ready', 'delivery', 'delivered', 'cancelled'],
       default: 'accepted',
     },
     estimatedDelivery: { type: String },
@@ -33,7 +33,13 @@ const BookingSchema = new mongoose.Schema(
       name: { type: String },
       phone: { type: String },
       vehicle: { type: String },
+      email: { type: String },
+      role: { type: String },
+      status: { type: String },
+      action: { type: String, enum: ['pickup', 'delivery'] },
     },
+    feedbackRating: { type: Number, min: 1, max: 5 },
+    feedbackMessage: { type: String, default: '' },
   },
   { timestamps: true }
 );

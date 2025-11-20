@@ -9,6 +9,7 @@ const SubscriptionSchema = new mongoose.Schema({
   monthKey: { type: String, required: true }, // e.g., 2025-09
   createdBookingId: { type: String }, // booking id created for this month
   notes: { type: String },
+  pickupAddress: { type: String },
   pickupTime: { type: String },
   runs: [{ type: Date }], // all planned pickup dates for the month
   nextRun: { type: Date },

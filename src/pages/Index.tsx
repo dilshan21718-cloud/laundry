@@ -1,4 +1,5 @@
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -18,6 +19,7 @@ import {
   Phone
 } from "lucide-react";
 import heroImage from "@/assets/hero-laundry.jpg";
+import { api } from "@/lib/api";
 
 const services = [
   {
@@ -102,11 +104,37 @@ const testimonials = [
   }
 ];
 
-import { useNavigate } from "react-router-dom";
-
 const Index = () => {
   const loggedInType = typeof window !== 'undefined' ? localStorage.getItem("laundrybuddy_loggedin_type") : null;
   const navigate = useNavigate();
+  const [dynamicTestimonials, setDynamicTestimonials] = useState<any[]>([]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const feedback = await api.bookings.publicFeedback(6);
+        if (Array.isArray(feedback)) {
+          setDynamicTestimonials(
+            feedback.map((f: any) => ({
+              name: f.name || "Verified Customer",
+              rating: f.rating || 5,
+              comment: f.comment || "",
+              service: f.service || "Laundry Service",
+            }))
+          );
+        } else {
+          setDynamicTestimonials([]);
+        }
+      } catch {
+        setDynamicTestimonials([]);
+      }
+    })();
+  }, []);
+
+  const allTestimonials = [
+    ...(dynamicTestimonials || []),
+    ...testimonials,
+  ];
 
   // Handler for protected actions
   const handleProtectedNav = (route) => {
@@ -305,25 +333,34 @@ const Index = () => {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 animate-slide-up">
-            {testimonials.map((testimonial, index) => (
-              <Card key={index} className="shadow-soft hover:shadow-medium transition-shadow">
-                <CardContent className="p-6">
-                  <div className="flex items-center mb-4">
-                    {[...Array(testimonial.rating)].map((_, i) => (
-                      <Star key={i} className="h-5 w-5 text-yellow-400 fill-current" />
-                    ))}
-                  </div>
-                  <p className="text-muted-foreground mb-4 italic">
-                    "{testimonial.comment}"
-                  </p>
-                  <div>
-                    <p className="font-semibold">{testimonial.name}</p>
-                    <p className="text-sm text-muted-foreground">{testimonial.service}</p>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+          {/* Right-to-left scrolling testimonials */}
+          <div className="relative overflow-hidden">
+            <div className="testimonial-marquee animate-slide-up">
+              {[...allTestimonials, ...allTestimonials].map((testimonial, index) => {
+                const rating = Math.max(0, Math.min(5, Number(testimonial.rating) || 0));
+                return (
+                  <Card key={index} className="shadow-soft hover:shadow-medium transition-shadow min-w-[280px] md:min-w-[320px] mr-4">
+                    <CardContent className="p-6">
+                      <div className="flex items-center mb-4">
+                        {Array.from({ length: 5 }).map((_, i) => (
+                          <Star
+                            key={i}
+                            className={`h-5 w-5 ${i < rating ? 'text-yellow-400 fill-current' : 'text-gray-300'}`}
+                          />
+                        ))}
+                      </div>
+                      <p className="text-muted-foreground mb-4 italic">
+                        "{testimonial.comment}"
+                      </p>
+                      <div>
+                        <p className="font-semibold">{testimonial.name}</p>
+                        <p className="text-sm text-muted-foreground">{testimonial.service}</p>
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
           </div>
         </div>
       </section>

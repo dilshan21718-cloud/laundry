@@ -99,7 +99,7 @@ const Admin = () => {
   const [viewLoading, setViewLoading] = useState(false);
   const [users, setUsers] = useState<any[]>([]);
   const [staffList, setStaffList] = useState<any[]>([]);
-  const [newStaff, setNewStaff] = useState({ name: "", phone: "", email: "", role: "Delivery Executive" });
+  const [newStaff, setNewStaff] = useState({ name: "", phone: "", email: "", password: "" });
   const [assignOpenIndex, setAssignOpenIndex] = useState<number | null>(null);
   const [assignOrderId, setAssignOrderId] = useState<string>("");
   const [assignAction, setAssignAction] = useState<'pickup' | 'delivery'>('pickup');
@@ -110,6 +110,34 @@ const Admin = () => {
   const [reportStatus, setReportStatus] = useState<string>("");
   const [contactStaff, setContactStaff] = useState<any>(null);
   const [paymentFilter, setPaymentFilter] = useState<string>("all");
+  const [priorityOrderIds, setPriorityOrderIds] = useState<string[]>([]);
+  const [orderSearch, setOrderSearch] = useState<string>("");
+  const [weeklySearch, setWeeklySearch] = useState<string>("");
+  const [dailySearch, setDailySearch] = useState<string>("");
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const raw = window.localStorage.getItem('laundry_admin_priority_orders');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          setPriorityOrderIds(parsed);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem('laundry_admin_priority_orders', JSON.stringify(priorityOrderIds));
+    } catch {
+      // ignore
+    }
+  }, [priorityOrderIds]);
 
   const submitAssign = async (staff: any) => {
     if (!assignOrderId) return alert('Please choose an Order ID');
@@ -117,9 +145,15 @@ const Admin = () => {
     const alreadyActive = (orders || []).some((o: any) => {
       const as = o.assignedStaff || {};
       const isAssignedToStaff = (as.name && as.name === staff.name) || (as.phone && as.phone === staff.phone);
-      const isActive = o.status !== 'delivered';
+      const action = as.action || 'pickup';
+      const isActive = action === 'pickup'
+        ? o.status === 'accepted'
+        : action === 'delivery'
+          ? o.status === 'delivery'
+          : o.status !== 'delivered';
       return isAssignedToStaff && isActive;
     });
+
     if (alreadyActive) {
       return alert('This delivery staff is already assigned to an active order. Complete it before assigning a new one.');
     }
@@ -159,7 +193,12 @@ const Admin = () => {
     return (orders || []).some((o: any) => {
       const as = o.assignedStaff || {};
       const isAssignedToStaff = (as.name && as.name === staff.name) || (as.phone && as.phone === staff.phone);
-      const isActive = o.status !== 'delivered';
+      const action = as.action || 'pickup';
+      const isActive = action === 'pickup'
+        ? o.status === 'accepted'
+        : action === 'delivery'
+          ? o.status === 'delivery'
+          : o.status !== 'delivered';
       return isAssignedToStaff && isActive;
     });
   };
@@ -175,7 +214,22 @@ const Admin = () => {
     const as = o.assignedStaff || {};
     const hasPhone = typeof as.phone === 'string' && as.phone.trim().length > 0;
     const hasRealName = typeof as.name === 'string' && as.name.trim().length > 0 && as.name !== 'Laundry Staff';
-    return hasPhone || hasRealName;
+
+    // If there is no real staff info, treat as unassigned
+    if (!hasPhone && !hasRealName) return false;
+
+    const action = as.action || 'pickup';
+    const status = o.status;
+
+    // An order is "actively" assigned only while the current action is in its active status
+    const isActive =
+      action === 'pickup'
+        ? status === 'accepted'
+        : action === 'delivery'
+          ? status === 'delivery'
+          : status !== 'delivered';
+
+    return isActive;
   };
 
   const fetchOrders = async () => {
@@ -294,18 +348,44 @@ const Admin = () => {
   }, [orders, users, staffList, loggedType, meName, mePhone]);
 
   const advanceStatus = (current: string) => {
-    const flow = ["accepted","picked","washing","ready","delivery","delivered"];
-    const idx = flow.indexOf(current);
-    return flow[Math.min(idx + 1, flow.length - 1)] || current;
+    const s = (current || "").toLowerCase();
+
+    if (s === "accepted") return "picked";
+    if (s === "picked") return "washing";
+    if (s === "washing") return "ready";
+    if (s === "ready") return "delivery";
+    if (s === "delivery") return "delivered";
+
+    // For any other/unknown status, keep it unchanged
+    return current;
   };
 
   const handleUpdateStatus = async (id: string, currentStatus: string) => {
     try {
       const next = advanceStatus(currentStatus);
+      if (!next || next === currentStatus) return;
       await api.bookings.updateStatus(id, { status: next });
       await fetchOrders();
     } catch (e: any) {
       alert(e?.message || 'Failed to update status');
+    }
+  };
+
+  const canCancelOrder = (status: string) => {
+    const s = (status || "").toLowerCase();
+    return s === "accepted" || s === "picked";
+  };
+
+  const handleCancelOrder = async (id: string, currentStatus: string) => {
+    if (!canCancelOrder(currentStatus)) return;
+    const confirmCancel = window.confirm('Are you sure you want to cancel this order?');
+    if (!confirmCancel) return;
+    try {
+      await api.bookings.updateStatus(id, { status: 'cancelled' });
+      await fetchOrders();
+      alert('Order cancelled successfully');
+    } catch (e: any) {
+      alert(e?.message || 'Failed to cancel order');
     }
   };
 
@@ -336,6 +416,68 @@ const Admin = () => {
       case "refunded": return "bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full text-xs font-semibold";
       default: return "bg-gray-100 text-gray-700 px-2 py-0.5 rounded-full text-xs";
     }
+  };
+
+  const filteredNormalOrders = useMemo(() => {
+    const base: any[] = (orders.length
+      ? (loggedType === 'staff'
+          ? orders.filter((o: any) => {
+              const as = o.assignedStaff || {};
+              return (as.name && as.name === meName) || (as.phone && as.phone === mePhone);
+            })
+          : orders)
+      : recentOrders) as any[];
+
+    const byPayment = base.filter((order: any) => {
+      if (paymentFilter === "all") return true;
+      if (paymentFilter === "priority") {
+        return priorityOrderIds.includes(order.id);
+      }
+      if (paymentFilter === "failed") {
+        const payment = String(order.paymentStatus || "").toLowerCase();
+        const status = String(order.status || "").toLowerCase();
+        return payment === "failed" || status === "cancelled";
+      }
+      if (paymentFilter === "delivered") {
+        const status = String(order.status || "").toLowerCase();
+        const payment = String(order.paymentStatus || "").toLowerCase();
+        return status === "delivered" && payment === "paid";
+      }
+      return String(order.paymentStatus || "").toLowerCase() === paymentFilter;
+    });
+
+    const term = orderSearch.trim().toLowerCase();
+    if (!term) return byPayment;
+
+    return byPayment.filter((order: any) =>
+      String(order.id || "").toLowerCase().includes(term)
+    );
+  }, [orders, loggedType, meName, mePhone, paymentFilter, priorityOrderIds, orderSearch]);
+
+  const weeklyOrdersFiltered = useMemo(() => {
+    const base = (subs || []).filter((s: any) => s.kind === 'weekly_pickup');
+    const term = weeklySearch.trim().toLowerCase();
+    if (!term) return base;
+    return base.filter((s: any) => {
+      const id = String(s.code || s._id || s.createdBookingId || '').toLowerCase();
+      return id.includes(term);
+    });
+  }, [subs, weeklySearch]);
+
+  const dailyOrdersFiltered = useMemo(() => {
+    const base = (subs || []).filter((s: any) => s.kind !== 'weekly_pickup');
+    const term = dailySearch.trim().toLowerCase();
+    if (!term) return base;
+    return base.filter((s: any) => {
+      const id = String(s.code || s._id || s.createdBookingId || '').toLowerCase();
+      return id.includes(term);
+    });
+  }, [subs, dailySearch]);
+
+  const togglePriority = (orderId: string) => {
+    setPriorityOrderIds(prev =>
+      prev.includes(orderId) ? prev.filter(id => id !== orderId) : [...prev, orderId]
+    );
   };
 
   return (
@@ -485,54 +627,113 @@ const Admin = () => {
 
                   {/* Normal Orders Tab */}
                   <TabsContent value="normal-orders" className="space-y-4">
-                    {/* Payment Filter */}
-                    <div className="flex items-center gap-2 mb-4">
-                      <Label className="text-sm font-semibold">Filter by Payment:</Label>
-                      <div className="flex gap-2">
-                        <Button size="sm" variant={paymentFilter === "all" ? "default" : "outline"} onClick={() => setPaymentFilter("all")}>All</Button>
-                        <Button size="sm" variant={paymentFilter === "paid" ? "default" : "outline"} onClick={() => setPaymentFilter("paid")}>Paid</Button>
-                        <Button size="sm" variant={paymentFilter === "pending" ? "default" : "outline"} onClick={() => setPaymentFilter("pending")}>Pending</Button>
-                        <Button size="sm" variant={paymentFilter === "failed" ? "default" : "outline"} onClick={() => setPaymentFilter("failed")}>Failed</Button>
+                    {/* Payment Filter + Search */}
+                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+                      <div className="flex items-center gap-2">
+                        <Label className="text-sm font-semibold">Filter by Payment:</Label>
+                        <div className="flex flex-wrap gap-2">
+                          <Button size="sm" variant={paymentFilter === "all" ? "default" : "outline"} onClick={() => setPaymentFilter("all")}>All</Button>
+                          <Button size="sm" variant={paymentFilter === "paid" ? "default" : "outline"} onClick={() => setPaymentFilter("paid")}>Paid</Button>
+                          <Button size="sm" variant={paymentFilter === "pending" ? "default" : "outline"} onClick={() => setPaymentFilter("pending")}>Pending</Button>
+                          <Button size="sm" variant={paymentFilter === "failed" ? "default" : "outline"} onClick={() => setPaymentFilter("failed")}>Failed</Button>
+                          <Button size="sm" variant={paymentFilter === "priority" ? "default" : "outline"} onClick={() => setPaymentFilter("priority")}>Priority</Button>
+                          <Button size="sm" variant={paymentFilter === "delivered" ? "default" : "outline"} onClick={() => setPaymentFilter("delivered")}>Delivered</Button>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Label className="text-sm font-semibold whitespace-nowrap">Search Order ID:</Label>
+                        <Input
+                          value={orderSearch}
+                          onChange={(e) => setOrderSearch(e.target.value)}
+                          placeholder="Enter Order ID"
+                          className="h-8 w-40 md:w-64"
+                        />
                       </div>
                     </div>
 
-                    {(orders.length ? (loggedType === 'staff' ? orders.filter((o: any) => { const as = o.assignedStaff || {}; return (as.name && as.name === meName) || (as.phone && as.phone === mePhone); }) : orders) : recentOrders).filter((order: any) => paymentFilter === "all" || order.paymentStatus?.toLowerCase() === paymentFilter).map((order: any) => (
-                      <div key={order.id} className="border rounded-lg p-4 hover:shadow-soft transition-shadow">
-                        <div className="flex justify-between items-start mb-3">
-                          <div>
-                            <p className="font-semibold">Order #{order.id}</p>
-                            <p className="text-muted-foreground">{order.customer || ''}</p>
+                    {filteredNormalOrders.map((order: any) => {
+                      const hasFeedback = (typeof (order as any).feedbackRating === 'number' && (order as any).feedbackRating > 0) || ((order as any).feedbackMessage && (order as any).feedbackMessage.length > 0);
+                      const isPriority = priorityOrderIds.includes(order.id);
+                      const canCancel = canCancelOrder(order.status);
+                      return (
+                        <div key={order.id} className="border rounded-lg p-4 hover:shadow-soft transition-shadow">
+                          <div className="flex justify-between items-start mb-3">
+                            <div>
+                              <p className="font-semibold">Order #{order.id}</p>
+                              <p className="text-muted-foreground">{order.customer || ''}</p>
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <label className="flex items-center gap-1 text-xs text-muted-foreground">
+                                <input
+                                  type="checkbox"
+                                  checked={isPriority}
+                                  onChange={() => togglePriority(order.id)}
+                                  className="h-4 w-4 rounded border-gray-300"
+                                />
+                                Priority
+                              </label>
+                              <Badge variant="secondary" className={getStatusColor(order.status)}>
+                                {order.status}
+                              </Badge>
+                            </div>
                           </div>
-                          <Badge variant="secondary" className={getStatusColor(order.status)}>
-                            {order.status}
-                          </Badge>
+                          <div className="flex justify-between items-center">
+                            <div className="space-y-1">
+                              <p className="text-sm"><strong>Service:</strong> {order.service}</p>
+                              <p className="text-sm"><strong>Amount:</strong> ₹{order.totalAmount ?? order.amount}</p>
+                              {order.paymentStatus && (
+                                <p className="text-sm"><strong>Payment:</strong> <span className={getPaymentStatusColor(order.paymentStatus)}>{order.paymentStatus}</span></p>
+                              )}
+                              {order.time && <p className="text-sm text-muted-foreground">{order.time}</p>}
+                            </div>
+                            <div className="space-x-2">
+                              <Button size="sm" variant="outline" onClick={() => openOrderView(order.id)}>View</Button>
+                              <Button size="sm" onClick={() => handleUpdateStatus(order.id, order.status)}>Update Status</Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={!canCancel}
+                                onClick={() => handleCancelOrder(order.id, order.status)}
+                              >
+                                Cancel
+                              </Button>
+                            </div>
+                          </div>
+                          {hasFeedback && (
+                            <div className="mt-3 text-xs text-muted-foreground border border-blue-100 rounded-md p-2 bg-blue-50/40">
+                              <div>
+                                <strong>Customer Feedback:</strong>{' '}
+                                {typeof (order as any).feedbackRating === 'number' && (order as any).feedbackRating > 0
+                                  ? `${(order as any).feedbackRating}/5`
+                                  : 'No rating'}
+                              </div>
+                              {(order as any).feedbackMessage && (
+                                <div className="mt-1">
+                                  {(order as any).feedbackMessage}
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
-                        <div className="flex justify-between items-center">
-                          <div className="space-y-1">
-                            <p className="text-sm"><strong>Service:</strong> {order.service}</p>
-                            <p className="text-sm"><strong>Amount:</strong> ₹{order.totalAmount ?? order.amount}</p>
-                            {order.paymentStatus && (
-                              <p className="text-sm"><strong>Payment:</strong> <span className={getPaymentStatusColor(order.paymentStatus)}>{order.paymentStatus}</span></p>
-                            )}
-                            {order.time && <p className="text-sm text-muted-foreground">{order.time}</p>}
-                          </div>
-                          <div className="space-x-2">
-                            <Button size="sm" variant="outline" onClick={() => openOrderView(order.id)}>View</Button>
-                            <Button size="sm" onClick={() => handleUpdateStatus(order.id, order.status)}>Update Status</Button>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                    {(orders.length ? (loggedType === 'staff' ? orders.filter((o: any) => { const as = o.assignedStaff || {}; return (as.name && as.name === meName) || (as.phone && as.phone === mePhone); }) : orders) : recentOrders).filter((order: any) => paymentFilter === "all" || order.paymentStatus?.toLowerCase() === paymentFilter).length === 0 && (
-                      <div className="text-center text-muted-foreground py-8">
-                        {paymentFilter === "all" ? "No normal orders yet" : `No ${paymentFilter} orders found`}
-                      </div>
+                      );
+                    })}
+                    {filteredNormalOrders.length === 0 && (
+                      <div className="text-center text-muted-foreground py-8">No normal orders yet</div>
                     )}
                   </TabsContent>
 
                   {/* Weekly Orders Tab */}
                   <TabsContent value="weekly-orders" className="space-y-4">
-                    {subs.filter((s: any) => s.kind === 'weekly_pickup').map((s: any, idx: number) => (
+                    <div className="flex items-center justify-end gap-2 mb-2">
+                      <Label className="text-sm font-semibold whitespace-nowrap">Search ID:</Label>
+                      <Input
+                        value={weeklySearch}
+                        onChange={(e) => setWeeklySearch(e.target.value)}
+                        placeholder="Subscription / Order ID"
+                        className="h-8 w-40 md:w-64"
+                      />
+                    </div>
+                    {weeklyOrdersFiltered.map((s: any, idx: number) => (
                       <div key={idx} className="border border-primary/20 rounded-md p-3 bg-background/80">
                         <div className="flex justify-between items-start mb-2">
                           <div>
@@ -560,14 +761,23 @@ const Admin = () => {
                         </div>
                       </div>
                     ))}
-                    {subs.filter((s: any) => s.kind === 'weekly_pickup').length === 0 && (
+                    {weeklyOrdersFiltered.length === 0 && (
                       <div className="text-center text-muted-foreground py-8">No weekly orders yet</div>
                     )}
                   </TabsContent>
 
                   {/* Daily Regular Orders Tab */}
                   <TabsContent value="daily-orders" className="space-y-4">
-                    {subs.filter((s: any) => s.kind !== 'weekly_pickup').map((s: any, idx: number) => (
+                    <div className="flex items-center justify-end gap-2 mb-2">
+                      <Label className="text-sm font-semibold whitespace-nowrap">Search ID:</Label>
+                      <Input
+                        value={dailySearch}
+                        onChange={(e) => setDailySearch(e.target.value)}
+                        placeholder="Subscription / Order ID"
+                        className="h-8 w-40 md:w-64"
+                      />
+                    </div>
+                    {dailyOrdersFiltered.map((s: any, idx: number) => (
                       <div key={idx} className="border border-primary/20 rounded-md p-3 bg-background/80">
                         <div className="flex justify-between items-start mb-2">
                           <div>
@@ -595,7 +805,7 @@ const Admin = () => {
                         </div>
                       </div>
                     ))}
-                    {subs.filter((s: any) => s.kind !== 'weekly_pickup').length === 0 && (
+                    {dailyOrdersFiltered.length === 0 && (
                       <div className="text-center text-muted-foreground py-8">No daily regular orders yet</div>
                     )}
                   </TabsContent>
@@ -682,16 +892,22 @@ const Admin = () => {
                         <Input type="email" value={newStaff.email} onChange={(e) => setNewStaff({ ...newStaff, email: e.target.value })} placeholder="email@example.com" />
                       </div>
                       <div>
-                        <Label>Role</Label>
-                        <Input value={newStaff.role} onChange={(e) => setNewStaff({ ...newStaff, role: e.target.value })} placeholder="Delivery Executive" />
+                        <Label>Password</Label>
+                        <Input type="password" value={newStaff.password} onChange={(e) => setNewStaff({ ...newStaff, password: e.target.value })} placeholder="Set login password" />
                       </div>
                       <div className="flex items-end">
                         <Button onClick={async () => {
-                          if (!newStaff.name || !newStaff.phone) return;
+                          if (!newStaff.name || !newStaff.phone || !newStaff.password) return;
                           try {
-                            const created = await api.staff.create({ ...newStaff, ordersToday: 0 });
+                            const created = await api.staff.create({
+                              name: newStaff.name,
+                              phone: newStaff.phone,
+                              email: newStaff.email,
+                              password: newStaff.password,
+                              ordersToday: 0,
+                            });
                             setStaffList([created, ...staffList]);
-                            setNewStaff({ name: "", phone: "", email: "", role: "Delivery Executive" });
+                            setNewStaff({ name: "", phone: "", email: "", password: "" });
                           } catch (e: any) {
                             alert(e?.message || 'Failed to add staff');
                           }
@@ -768,7 +984,7 @@ const Admin = () => {
                         </p>
                         <div className="space-x-2">
                           <Button size="sm" variant="outline" onClick={() => setContactStaff(staff)}>View</Button>
-                          <Button size="sm" disabled={(orders || []).some((o: any) => { const as = o.assignedStaff || {}; const isAssignedToStaff = (as.name && as.name === staff.name) || (as.phone && as.phone === staff.phone); const isActive = o.status !== 'delivered'; return isAssignedToStaff && isActive; })} onClick={() => {
+                          <Button size="sm" disabled={(orders || []).some((o: any) => { const as = o.assignedStaff || {}; const isAssignedToStaff = (as.name && as.name === staff.name) || (as.phone && as.phone === staff.phone); const action = as.action || 'pickup'; const isActive = action === 'pickup' ? o.status === 'accepted' : action === 'delivery' ? o.status === 'delivery' : o.status !== 'delivered'; return isAssignedToStaff && isActive; })} onClick={() => {
                             if (assignOpenIndex === index) {
                               setAssignOpenIndex(null);
                             } else {
@@ -789,10 +1005,14 @@ const Admin = () => {
                               >
                                 <option value="">Select recent order</option>
                                 {orders
-                                  .filter((o: any) => !isMeaningfullyAssigned(o))
+                                  .filter(
+                                    (o: any) =>
+                                      !isMeaningfullyAssigned(o) &&
+                                      (o.status === 'accepted' || o.status === 'delivery')
+                                  )
                                   .slice(0, 20)
                                   .map((o: any) => (
-                                    <option key={o.id} value={o.id}>#{o.id}</option>
+                                    <option key={o.id} value={o.id}>#{o.id} • {o.status}</option>
                                   ))}
                                 {subs
                                   .filter((s: any) => s && s.createdBookingId && isBookingUnassigned(s.createdBookingId))
@@ -886,7 +1106,7 @@ const Admin = () => {
                         </p>
                         <div className="space-x-2">
                           <Button size="sm" variant="outline" onClick={() => setContactStaff(staff)}>View</Button>
-                          <Button size="sm" disabled={(orders || []).some((o: any) => { const as = o.assignedStaff || {}; const isAssignedToStaff = (as.name && as.name === staff.name) || (as.phone && as.phone === staff.phone); const isActive = o.status !== 'delivered'; return isAssignedToStaff && isActive; })} onClick={() => {
+                          <Button size="sm" disabled={(orders || []).some((o: any) => { const as = o.assignedStaff || {}; const isAssignedToStaff = (as.name && as.name === staff.name) || (as.phone && as.phone === staff.phone); const action = as.action || 'pickup'; const isActive = action === 'pickup' ? o.status === 'accepted' : action === 'delivery' ? o.status === 'delivery' : o.status !== 'delivered'; return isAssignedToStaff && isActive; })} onClick={() => {
                             if (assignOpenIndex === index) {
                               setAssignOpenIndex(null);
                             } else {
@@ -907,10 +1127,14 @@ const Admin = () => {
                               >
                                 <option value="">Select recent order</option>
                                 {orders
-                                  .filter((o: any) => !isMeaningfullyAssigned(o))
+                                  .filter(
+                                    (o: any) =>
+                                      !isMeaningfullyAssigned(o) &&
+                                      (o.status === 'accepted' || o.status === 'delivery')
+                                  )
                                   .slice(0, 20)
                                   .map((o: any) => (
-                                    <option key={o.id} value={o.id}>#{o.id}</option>
+                                    <option key={o.id} value={o.id}>#{o.id} • {o.status}</option>
                                   ))}
                                 {subs
                                   .filter((s: any) => s && s.createdBookingId && isBookingUnassigned(s.createdBookingId))
@@ -1189,7 +1413,6 @@ const Admin = () => {
                         <div><strong>Name:</strong> {u.username}</div>
                         <div><strong>Email:</strong> {u.email}</div>
                         <div><strong>Phone:</strong> {u.phone}</div>
-                        <div><strong>Type:</strong> {u.userType}</div>
                       </div>
                     </div>
                   );
@@ -1288,7 +1511,14 @@ const Admin = () => {
                               setContactStaff(null);
                               openOrderView(order.id);
                             }}>View</Button>
-                            {order.status !== 'delivered' && (
+                            {(() => {
+                              const as = order.assignedStaff || {};
+                              const action = as.action || 'pickup';
+                              const canCancel =
+                                order.status !== 'delivered' &&
+                                !(action === 'pickup' && order.status === 'picked');
+                              return canCancel;
+                            })() && (
                               <Button size="sm" variant="destructive" onClick={async () => {
                                 if (!confirm(`Cancel assignment for order #${order.id}?`)) return;
                                 try {

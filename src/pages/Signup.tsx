@@ -11,13 +11,14 @@ const Signup = () => {
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  const [address, setAddress] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username || !email || !phone || !password || !confirmPassword) {
+    if (!username || !email || !phone || !password || !confirmPassword || (userType === "user" && !address)) {
       setError("Please fill in all fields.");
       return;
     }
@@ -31,7 +32,14 @@ const Signup = () => {
     }
     setError("");
     try {
-      await api.auth.signup({ username, email, phone, password, userType: userType as any });
+      await api.auth.signup({
+        username,
+        email,
+        phone,
+        password,
+        userType: userType as any,
+        ...(userType === "user" && address ? { address } : {}),
+      });
       alert("Successfully done");
       navigate("/login");
     } catch (err: any) {
@@ -88,6 +96,18 @@ const Signup = () => {
               maxLength={15}
             />
           </div>
+          {userType === "user" && (
+            <div>
+              <label className="block mb-1 font-medium">Address</label>
+              <Input
+                type="text"
+                value={address}
+                onChange={e => setAddress(e.target.value)}
+                placeholder="Enter your address"
+                required
+              />
+            </div>
+          )}
           <div>
             <label className="block mb-1 font-medium">Password</label>
             <Input

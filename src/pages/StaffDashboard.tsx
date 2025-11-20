@@ -23,14 +23,12 @@ const StaffDashboard = () => {
   const [viewOpen, setViewOpen] = useState(false);
   const [viewOrder, setViewOrder] = useState<any>(null);
   const [viewLoading, setViewLoading] = useState(false);
-  const [subs, setSubs] = useState<any[]>([]);
 
   const fetchOrders = async () => {
     setLoading(true);
     try {
-      const list = await api.bookings.adminAll();
+      const list = await api.bookings.staffMine();
       setOrders(list || []);
-      try { const allSubs = await api.subscriptions.adminAll(); setSubs(allSubs || []); } catch (_) { setSubs([]); }
     } catch (_) {
       // keep empty
     } finally {
@@ -118,14 +116,19 @@ const StaffDashboard = () => {
   };
 
   const advanceStatus = (current: string) => {
-    const flow = ["accepted","picked","washing","ready","delivery","delivered"];
-    const idx = flow.indexOf(current);
-    return flow[Math.min(idx + 1, flow.length - 1)] || current;
+    const s = (current || "").toLowerCase();
+
+    if (s === "accepted") return "picked";
+    if (s === "delivery") return "delivered";
+
+    // For any other status, do not change from the staff side
+    return current;
   };
 
   const handleUpdateStatus = async (id: string, currentStatus: string) => {
     try {
       const next = advanceStatus(currentStatus);
+      if (!next || next === currentStatus) return;
       await api.bookings.updateStatus(id, { status: next });
       await fetchOrders();
     } catch (e: any) {
@@ -247,7 +250,7 @@ const StaffDashboard = () => {
                 </div>
               ) : (
                 myAssignedOrders.map((order: any) => {
-                  const isSubscription = (subs || []).some((s: any) => s.createdBookingId === order.id);
+                  const isSubscription = typeof order.service === 'string' && order.service.toLowerCase().includes('subscription');
                   return (
                     <div key={order.id} className={`border rounded-lg p-4 hover:shadow-soft transition-shadow ${isSubscription ? 'bg-purple-50 border-purple-200' : ''}`}>
                       <div className="flex justify-between items-start mb-3">
@@ -263,16 +266,16 @@ const StaffDashboard = () => {
                       <div className="flex justify-between items-center">
                         <div className="space-y-1">
                           <p className="text-sm"><strong>Amount:</strong> ₹{order.totalAmount || 0}</p>
-                          <p className="text-sm"><strong>Action:</strong> {order.assignedStaff?.action || 'N/A'}</p>
+                          <p className="text-sm"><strong>Action:</strong> {order.assignedStaff?.action === 'pickup' ? 'Pickup' : order.assignedStaff?.action === 'delivery' ? 'Delivery' : 'N/A'}</p>
                           {order.pickupAddress && (
                             <p className="text-xs text-muted-foreground"><strong>Address:</strong> {order.pickupAddress}</p>
                           )}
                         </div>
                         <div className="space-x-2">
                           <Button size="sm" variant="outline" onClick={() => openOrderView(order.id)}>View</Button>
-                          {order.status !== 'delivered' && (
+                          {(order.status === 'accepted' || order.status === 'delivery') && (
                             <Button size="sm" onClick={() => handleUpdateStatus(order.id, order.status)}>
-                              Advance Status
+                              Accept
                             </Button>
                           )}
                         </div>

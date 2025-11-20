@@ -106,6 +106,7 @@ const Book = () => {
       if (user) username = user.username;
     } catch {}
   }
+  const navigate = useNavigate();
   const [selectedService, setSelectedService] = useState("");
   const [pricingType, setPricingType] = useState("kg");
   const [quantity, setQuantity] = useState(1);
@@ -117,14 +118,18 @@ const Book = () => {
   const [pickupTime, setPickupTime] = useState("");
   const [deliveryTime, setDeliveryTime] = useState("");
   const [address, setAddress] = useState("");
+  const [savedAddress, setSavedAddress] = useState("");
+  const [useSavedAddress, setUseSavedAddress] = useState(false);
   const [instructions, setInstructions] = useState("");
   const [donationPickup, setDonationPickup] = useState(false);
   const [trackCode, setTrackCode] = useState("");
+  const [copied, setCopied] = useState(false);
   const [loyaltyPoints, setLoyaltyPoints] = useState(0);
   const [useLoyaltyPoints, setUseLoyaltyPoints] = useState(false);
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
   const [paymentOption, setPaymentOption] = useState<"now" | "after">("after");
-  
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
   // Generate a new code on every page load
   function generateRandomCode(length = 12) {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -143,21 +148,25 @@ const Book = () => {
         const orders = await api.bookings.mine();
         const totalSpent = (orders || []).reduce((sum: number, order: any) => sum + (order.totalAmount || order.amount || 0), 0);
         const earnedPoints = Math.floor(totalSpent / 10);
-        
+
         // Calculate total used loyalty points
         const usedPoints = (orders || []).reduce((sum: number, order: any) => sum + (order.loyaltyPointsUsed || 0), 0);
-        
+
         // Available points = earned - used
         const availablePoints = Math.max(0, earnedPoints - usedPoints);
         setLoyaltyPoints(availablePoints);
       } catch (e) {
         setLoyaltyPoints(0);
       }
+      try {
+        const me = await api.auth.me();
+        if (me && typeof me.address === "string" && me.address.trim()) {
+          setSavedAddress(me.address);
+        }
+      } catch (_) {}
     };
     fetchLoyaltyPoints();
   }, []);
-  const [copied, setCopied] = useState(false);
-  const navigate = useNavigate();
 
   const itemDefs = perPiecePricing['wash-fold'];
   const getUnitPrice = (key: keyof PieceItems) => {
@@ -217,7 +226,10 @@ const Book = () => {
       alert("Please enter your address");
       return;
     }
-    
+    if (isSubmitting) {
+      return;
+    }
+
     // If user selected "Pay After Delivery", create booking directly
     if (paymentOption === "after") {
       await createBookingWithoutPayment();
@@ -228,9 +240,10 @@ const Book = () => {
   };
 
   const createBookingWithoutPayment = async () => {
+    setIsSubmitting(true);
     setCopied(false);
     sessionStorage.setItem("laundrybuddy_last_track_code", trackCode);
-    
+
     const booking = {
       id: trackCode,
       service: services.find(s => s.id === selectedService)?.name || "",
@@ -267,7 +280,7 @@ const Book = () => {
       donationPickup,
       assignedStaff: undefined
     } as any;
-    
+
     try {
       await api.bookings.create(booking);
       alert("Booking confirmed! Payment will be collected after delivery.");
@@ -279,16 +292,21 @@ const Book = () => {
         navigate('/login');
         return;
       }
-      alert(message);
+      // Suppress generic failure alert to avoid confusing users with
+      // "Failed to create booking" followed by a success confirmation.
+      // Log the error for debugging instead.
+      console.error("Error while creating booking (pay-after):", err);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   const processPaymentAndBooking = async () => {
     setCopied(false);
     sessionStorage.setItem("laundrybuddy_last_track_code", trackCode);
-    
+
     const finalAmount = getFinalAmount();
-    
+
     // Razorpay payment options
     const options = {
       key: "rzp_test_RN5RT3SpBDWrqZ", // Razorpay test key
@@ -344,7 +362,16 @@ const Book = () => {
           navigate("/track");
         } catch (err: any) {
           const message = String(err?.message || "Failed to create booking");
-          alert(message);
+          if (message.toLowerCase().includes('unauthorized') || message.toLowerCase().includes('token')) {
+            alert('Please login to complete your booking.');
+            setPaymentModalOpen(false);
+            navigate('/login');
+            return;
+          }
+          // Suppress generic failure alert here as well to avoid a
+          // confusing "failed" message when the booking/payment may
+          // have actually succeeded; log for debugging instead.
+          console.error("Error while creating booking (pay-now):", err);
         }
       },
       prefill: {
@@ -461,7 +488,7 @@ const Book = () => {
                     Price by Pieces
                   </Button>
                 </div>
-                
+
                 {pricingType === 'kg' ? (
                   <div className="space-y-4">
                     <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
@@ -642,6 +669,26 @@ const Book = () => {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              {savedAddress && (
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    id="use-saved-address"
+                    checked={useSavedAddress}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setUseSavedAddress(checked);
+                      if (checked) {
+                        setAddress(savedAddress);
+                      }
+                    }}
+                    className="rounded border-gray-300"
+                  />
+                  <Label htmlFor="use-saved-address">
+                    Use my saved address
+                  </Label>
+                </div>
+              )}
               <div>
                 <Label htmlFor="address">Pickup & Delivery Address</Label>
                 <Textarea
@@ -712,7 +759,7 @@ const Book = () => {
                     </p>
                   </div>
                 </div>
-                
+
                 <div 
                   className={`flex items-start gap-3 p-4 border-2 rounded-lg cursor-pointer transition-all ${
                     paymentOption === "now" ? "border-primary bg-primary/5" : "border-gray-200 hover:border-primary/50"
@@ -747,7 +794,7 @@ const Book = () => {
               variant="hero"
               size="lg"
               className="px-8 animate-bounce-gentle"
-              disabled={!selectedService || !pickupDate || !deliveryDate || !address}
+              disabled={isSubmitting || !selectedService || !pickupDate || !deliveryDate || !address}
             >
               {paymentOption === "now" ? `Pay Now - ₹${calculatePrice()}` : `Book Service - ₹${calculatePrice()}`}
             </Button>

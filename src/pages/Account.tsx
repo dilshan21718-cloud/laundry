@@ -9,7 +9,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { 
   User, 
   Package, 
-  Heart, 
   Settings, 
   MapPin, 
   Phone, 
@@ -18,21 +17,22 @@ import {
   Star,
   Gift
 } from "lucide-react";
+// import { Heart } from "lucide-react"; // Removed unused import
+
 import { api } from "@/lib/api";
 
 const fallbackOrders = [] as any[]; // keep empty so stats reflect real data when logged in
 
-const digitalWardrobe = [
-  { item: "Blue Formal Shirt", status: "at-home", lastWashed: "2024-01-15" },
-  { item: "Black Jeans", status: "at-home", lastWashed: "2024-01-10" },
-  { item: "Red Kurta", status: "in-laundry", pickupDate: "2024-01-20" },
-  { item: "White T-shirt", status: "in-laundry", pickupDate: "2024-01-20" },
-];
-
 const Account = () => {
   const navigate = useNavigate();
   // Get logged-in user details (backend preferred, fallback to local)
-  const [userInfo, setUserInfo] = useState<any>({ username: "", email: "", phone: "", userType: "" });
+  const [userInfo, setUserInfo] = useState<any>({ username: "", email: "", phone: "", userType: "", address: "" });
+  const [profileUsername, setProfileUsername] = useState("");
+  const [profileEmail, setProfileEmail] = useState("");
+  const [profilePhone, setProfilePhone] = useState("");
+  const [profileAddress, setProfileAddress] = useState("");
+  const [profileSaving, setProfileSaving] = useState(false);
+
   useEffect(() => {
     const token = typeof window !== 'undefined' ? localStorage.getItem('laundrybuddy_token') : null;
     if (!token) {
@@ -43,24 +43,38 @@ const Account = () => {
         try {
           const users = JSON.parse(usersStr);
           const user = users.find((u: any) => u.userType === loggedInType);
-          if (user) setUserInfo(user);
+          if (user) {
+            setUserInfo(user);
+            setProfileUsername(user.username || "");
+            setProfileEmail(user.email || "");
+            setProfilePhone(user.phone || "");
+            setProfileAddress(user.address || "");
+          }
         } catch {}
       }
       return;
+
     }
     (async () => {
       try {
         const me = await api.auth.me();
         setUserInfo(me);
+        setProfileUsername((me as any).username || "");
+        setProfileEmail((me as any).email || "");
+        setProfilePhone((me as any).phone || "");
+        setProfileAddress((me as any).address || "");
       } catch (_) {
         // ignore, leave defaults
       }
+
     })();
   }, []);
 
   const [orders, setOrders] = useState<any[]>(fallbackOrders);
   const [subOrders, setSubOrders] = useState<any[]>([]);
   const [paymentFilter, setPaymentFilter] = useState<string>("all");
+  const [feedbackState, setFeedbackState] = useState<{ orderId: string | null; rating: number; message: string }>({ orderId: null, rating: 5, message: "" });
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
   useEffect(() => {
     (async () => {
       try {
@@ -74,13 +88,15 @@ const Account = () => {
           date: new Date(o.createdAt || Date.now()).toISOString().slice(0,10),
           status: o.status,
           amount: o.totalAmount || 0,
-          rating: 0,
+          rating: o.feedbackRating || 0,
           quantity: o.quantity,
           estimatedDelivery: o.estimatedDelivery,
           pickupAddress: o.pickupAddress,
           deliveryAddress: o.deliveryAddress,
           paymentStatus: o.paymentStatus,
           loyaltyPointsUsed: o.loyaltyPointsUsed || 0,
+          feedbackMessage: o.feedbackMessage || "",
+
           items: Array.isArray(o.items)
             ? (typeof o.items[0] === 'object'
                 ? o.items.filter((it: any) => (it?.quantity ?? 0) > 0).map((it: any) => `${it.quantity} ${it.name}`)
@@ -136,6 +152,11 @@ const Account = () => {
   const [showDailyModal, setShowDailyModal] = useState(false);
   const [dailyStart, setDailyStart] = useState<string>(new Date().toISOString().slice(0,10));
   const [dailyTime, setDailyTime] = useState<string>('09:00 AM - 12:00 PM');
+  const [weeklyAddress, setWeeklyAddress] = useState<string>("");
+  const [useWeeklySavedAddress, setUseWeeklySavedAddress] = useState<boolean>(false);
+  const [dailyAddress, setDailyAddress] = useState<string>("");
+  const [useDailySavedAddress, setUseDailySavedAddress] = useState<boolean>(false);
+
   useEffect(() => {
     (async () => {
       try {
@@ -148,6 +169,8 @@ const Account = () => {
   }, []);
   const hasWeeklyThisMonth = subs.some(s => s.kind === 'weekly_pickup');
   const hasDailyThisMonth = subs.some(s => s.kind === 'daily_pickup');
+
+  const savedProfileAddress = ((userInfo.address as string) || profileAddress || "").trim();
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -168,10 +191,117 @@ const Account = () => {
     }
   };
 
-  const getWardrobiStatus = (status: string) => {
-    return status === "at-home" 
-      ? { label: "At Home", color: "bg-green-500" }
-      : { label: "In Laundry", color: "bg-blue-500" };
+  const matchesPaymentFilter = (order: any) => {
+    if (paymentFilter === "all") return true;
+    const payment = String(order.paymentStatus || "").toLowerCase();
+    if (paymentFilter === "failed") {
+      const status = String(order.status || "").toLowerCase();
+      return payment === "failed" || status === "cancelled";
+    }
+    return payment === paymentFilter;
+  };
+
+  const canCancelOrder = (status: string) => {
+    const s = (status || "").toLowerCase();
+    return s === "accepted" || s === "picked";
+  };
+
+  const openFeedbackForOrder = (orderId: string, currentRating?: number, currentMessage?: string) => {
+    setFeedbackState({
+      orderId,
+      rating: currentRating && currentRating > 0 ? currentRating : 5,
+      message: currentMessage || "",
+    });
+  };
+
+  const submitFeedback = async (orderId: string) => {
+    if (!feedbackState.rating || feedbackState.rating < 1 || feedbackState.rating > 5) {
+      alert("Please provide a rating between 1 and 5.");
+      return;
+    }
+    try {
+      setFeedbackLoading(true);
+      await api.bookings.addFeedback(orderId, {
+        rating: feedbackState.rating,
+        message: feedbackState.message || "",
+      });
+      setOrders(prev =>
+        prev.map(o =>
+          o.id === orderId
+            ? { ...o, rating: feedbackState.rating, feedbackMessage: feedbackState.message || "" }
+            : o
+        )
+      );
+      setFeedbackState({ orderId: null, rating: 5, message: "" });
+      alert("Thank you for your feedback!");
+    } catch (e: any) {
+      alert(e?.message || "Failed to submit feedback");
+    } finally {
+      setFeedbackLoading(false);
+    }
+  };
+
+  const handleCancelOrder = async (orderId: string, currentStatus: string) => {
+    if (!canCancelOrder(currentStatus)) return;
+    const confirmCancel = window.confirm('Are you sure you want to cancel this order?');
+    if (!confirmCancel) return;
+    try {
+      await api.bookings.updateStatus(orderId, { status: 'cancelled' });
+      setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: 'cancelled' } : o));
+      alert('Order cancelled successfully');
+    } catch (e: any) {
+      alert(e?.message || 'Failed to cancel order');
+    }
+  };
+
+  const handleUpdateProfile = async () => {
+    const trimmedUsername = (profileUsername || "").trim();
+    const trimmedEmail = (profileEmail || "").trim();
+    const trimmedPhone = (profilePhone || "").trim();
+    const trimmedAddress = (profileAddress || "").trim();
+
+    if (!trimmedUsername) {
+      alert("Username is required.");
+      return;
+    }
+    if (!trimmedEmail || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(trimmedEmail)) {
+      alert("Please enter a valid email address.");
+      return;
+    }
+    if (!trimmedPhone || !/^\d{10,15}$/.test(trimmedPhone)) {
+      alert("Please enter a valid phone number (10-15 digits).");
+      return;
+    }
+    if (!trimmedAddress && userInfo.userType === "user") {
+      alert("Address is required for user accounts.");
+      return;
+    }
+
+    try {
+      setProfileSaving(true);
+      const updated = await api.auth.updateMe({
+        username: trimmedUsername,
+        email: trimmedEmail,
+        phone: trimmedPhone,
+        address: trimmedAddress,
+      });
+      setUserInfo((prev: any) => ({
+        ...prev,
+        username: (updated as any).username,
+        email: (updated as any).email,
+        phone: (updated as any).phone,
+        address: (updated as any).address,
+      }));
+      setProfileUsername((updated as any).username || "");
+      setProfileEmail((updated as any).email || "");
+      setProfilePhone((updated as any).phone || "");
+      setProfileAddress((updated as any).address || "");
+      alert("Profile updated successfully.");
+    } catch (e: any) {
+      alert(e?.message || "Failed to update profile");
+    } finally {
+      setProfileSaving(false);
+    }
   };
 
   return (
@@ -216,10 +346,9 @@ const Account = () => {
         </div>
 
         <Tabs defaultValue="profile" className="animate-slide-up">
-          <TabsList className="grid w-full grid-cols-4">
+          <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="profile">Profile</TabsTrigger>
             <TabsTrigger value="orders">Orders</TabsTrigger>
-            <TabsTrigger value="wardrobe">Wardrobe</TabsTrigger>
             <TabsTrigger value="settings">Settings</TabsTrigger>
           </TabsList>
 
@@ -239,20 +368,49 @@ const Account = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <Label>User Name</Label>
-                    <Input value={userInfo.username} readOnly className="mt-1 bg-gray-100" />
+                    <Input
+                      value={profileUsername}
+                      onChange={(e) => setProfileUsername(e.target.value)}
+                      className="mt-1"
+                      placeholder="Enter your name"
+                    />
                   </div>
                   <div>
                     <Label>Phone Number</Label>
-                    <Input value={userInfo.phone} readOnly className="mt-1 bg-gray-100" />
+                    <Input
+                      value={profilePhone}
+                      onChange={(e) => setProfilePhone(e.target.value)}
+                      className="mt-1"
+                      placeholder="Enter your phone number"
+                    />
                   </div>
                 </div>
                 <div>
                   <Label>Email Address</Label>
-                  <Input value={userInfo.email} readOnly className="mt-1 bg-gray-100" />
+                  <Input
+                    value={profileEmail}
+                    onChange={(e) => setProfileEmail(e.target.value)}
+                    className="mt-1"
+                    placeholder="Enter your email"
+                  />
                 </div>
                 <div>
-                  <Label>Account Type</Label>
-                  <Input value={userInfo.userType} readOnly className="mt-1 bg-gray-100" />
+                  <Label>Address</Label>
+                  <Input
+                    value={profileAddress}
+                    onChange={(e) => setProfileAddress(e.target.value)}
+                    className="mt-1"
+                    placeholder="Enter your address"
+                  />
+                </div>
+                <div className="flex justify-end pt-2">
+                  <Button
+                    type="button"
+                    onClick={handleUpdateProfile}
+                    disabled={profileSaving}
+                  >
+                    {profileSaving ? "Updating..." : "Update"}
+                  </Button>
                 </div>
               </CardContent>
             </Card>
@@ -292,41 +450,116 @@ const Account = () => {
                       </div>
                     </div>
                     
-                    {orders.filter(order => paymentFilter === "all" || order.paymentStatus?.toLowerCase() === paymentFilter).map((order) => (
-                      <div key={order.id} className="border rounded-lg p-4 hover:shadow-soft transition-shadow">
-                        <div className="flex justify-between items-start mb-3">
-                          <div>
-                            <p className="font-semibold">Order #{order.id}</p>
-                            <p className="text-muted-foreground">{order.customer || ''}</p>
+                    {orders.filter(matchesPaymentFilter).map((order) => {
+                      const isFeedbackOpen = feedbackState.orderId === order.id;
+                      const hasFeedback = (order.rating && order.rating > 0) || (order.feedbackMessage && order.feedbackMessage.length > 0);
+                      const canCancel = canCancelOrder(order.status);
+                      return (
+                        <div key={order.id} className="border rounded-lg p-4 hover:shadow-soft transition-shadow">
+                          <div className="flex justify-between items-start mb-3">
+                            <div>
+                              <p className="font-semibold">Order #{order.id}</p>
+                              <p className="text-muted-foreground">{order.customer || ''}</p>
+                            </div>
+                            <Badge variant="secondary" className={getStatusColor(order.status)}>
+                              {order.status}
+                            </Badge>
                           </div>
-                          <Badge variant="secondary" className={getStatusColor(order.status)}>
-                            {order.status}
-                          </Badge>
+                          <div className="flex justify-between items-center">
+                            <div className="space-y-1">
+                              <p className="text-sm"><strong>Service:</strong> {order.service}</p>
+                              <p className="text-sm"><strong>Amount:</strong> ₹{order.totalAmount ?? order.amount}</p>
+                              {order.time && <p className="text-sm text-muted-foreground">{order.time}</p>}
+                              {order.items && order.items.length > 0 && (
+                                <p className="text-xs text-muted-foreground"><strong>Items:</strong> {order.items.join(', ')}</p>
+                              )}
+                            </div>
+                            <div className="space-x-2">
+                              <Button size="sm" variant="outline" onClick={() => navigator.clipboard?.writeText(order.id)}>Copy ID</Button>
+                              <Button size="sm" onClick={() => { sessionStorage.setItem('laundrybuddy_last_track_code', order.id); navigate('/track'); }}>View</Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={!canCancel}
+                                onClick={() => handleCancelOrder(order.id, order.status)}
+                              >
+                                Cancel
+                              </Button>
+                              {order.status === "delivered" && !hasFeedback && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => openFeedbackForOrder(order.id, order.rating, order.feedbackMessage)}
+                                >
+                                  Feedback
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                          {(order.pickupAddress || order.deliveryAddress || order.paymentStatus) && (
+                            <div className="mt-2 text-xs text-muted-foreground">
+                              {order.pickupAddress && <span><strong>Pickup:</strong> {order.pickupAddress} </span>}
+                              {order.deliveryAddress && <span> • <strong>Delivery:</strong> {order.deliveryAddress} </span>}
+                              {order.paymentStatus && <span> • <strong>Payment:</strong> <span className={getPaymentStatusColor(order.paymentStatus)}>{order.paymentStatus}</span></span>}
+                            </div>
+                          )}
+                          {order.status === "delivered" && hasFeedback && (
+                            <div className="mt-3 text-xs text-muted-foreground border border-green-200 rounded-md p-2 bg-green-50/40">
+                              <div>
+                                <strong>Your Feedback:</strong> {order.rating ? `${order.rating}/5` : ''}
+                              </div>
+                              {order.feedbackMessage && (
+                                <div className="mt-1">
+                                  {order.feedbackMessage}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {order.status === "delivered" && !hasFeedback && isFeedbackOpen && (
+                            <div className="mt-3 border rounded-md p-3 bg-background/80 space-y-2 text-xs">
+                              <div>
+                                <Label className="text-xs">Rating (1–5)</Label>
+                                <Input
+                                  type="number"
+                                  min={1}
+                                  max={5}
+                                  value={feedbackState.rating}
+                                  onChange={(e) => setFeedbackState({ ...feedbackState, rating: Number(e.target.value) || 0 })}
+                                  className="mt-1 h-8 text-xs"
+                                />
+                              </div>
+                              <div>
+                                <Label className="text-xs">Message</Label>
+                                <textarea
+                                  value={feedbackState.message}
+                                  onChange={(e) => setFeedbackState({ ...feedbackState, message: e.target.value })}
+                                  className="mt-1 w-full rounded-md border px-2 py-1 text-xs"
+                                  rows={3}
+                                />
+                              </div>
+                              <div className="flex justify-end gap-2">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => setFeedbackState({ orderId: null, rating: 5, message: "" })}
+                                  disabled={feedbackLoading}
+                                >
+                                  Cancel
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  onClick={() => submitFeedback(order.id)}
+                                  disabled={feedbackLoading}
+                                >
+                                  {feedbackLoading && feedbackState.orderId === order.id ? "Submitting..." : "Submit"}
+                                </Button>
+                              </div>
+                            </div>
+                          )}
                         </div>
-                        <div className="flex justify-between items-center">
-                          <div className="space-y-1">
-                            <p className="text-sm"><strong>Service:</strong> {order.service}</p>
-                            <p className="text-sm"><strong>Amount:</strong> ₹{order.totalAmount ?? order.amount}</p>
-                            {order.time && <p className="text-sm text-muted-foreground">{order.time}</p>}
-                            {order.items && order.items.length > 0 && (
-                              <p className="text-xs text-muted-foreground"><strong>Items:</strong> {order.items.join(', ')}</p>
-                            )}
-                          </div>
-                          <div className="space-x-2">
-                            <Button size="sm" variant="outline" onClick={() => navigator.clipboard?.writeText(order.id)}>Copy ID</Button>
-                            <Button size="sm" onClick={() => { sessionStorage.setItem('laundrybuddy_last_track_code', order.id); navigate('/track'); }}>View</Button>
-                          </div>
-                        </div>
-                        {(order.pickupAddress || order.deliveryAddress || order.paymentStatus) && (
-                          <div className="mt-2 text-xs text-muted-foreground">
-                            {order.pickupAddress && <span><strong>Pickup:</strong> {order.pickupAddress} </span>}
-                            {order.deliveryAddress && <span> • <strong>Delivery:</strong> {order.deliveryAddress} </span>}
-                            {order.paymentStatus && <span> • <strong>Payment:</strong> <span className={getPaymentStatusColor(order.paymentStatus)}>{order.paymentStatus}</span></span>}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                    {orders.filter(order => paymentFilter === "all" || order.paymentStatus?.toLowerCase() === paymentFilter).length === 0 && (
+                      );
+                    })}
+                    {orders.filter(matchesPaymentFilter).length === 0 && (
                       <div className="text-center text-muted-foreground py-8">
                         {paymentFilter === "all" ? "No normal orders yet" : `No ${paymentFilter} orders found`}
                       </div>
@@ -390,7 +623,7 @@ const Account = () => {
                           )}
                           {Array.isArray(so.runs) && so.runs.length > 0 && (
                             <div className="mt-1 flex flex-wrap gap-1">
-                              {so.runs.slice(0, 8).map((d: string, i: number) => (
+                              {so.runs.slice(0, 5).map((d: string, i: number) => (
                                 <span key={i} className="px-2 py-0.5 bg-muted rounded">{new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}</span>
                               ))}
                             </div>
@@ -403,44 +636,6 @@ const Account = () => {
                     )}
                   </TabsContent>
                 </Tabs>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          {/* Wardrobe Tab */}
-          <TabsContent value="wardrobe" className="mt-6">
-            <Card className="shadow-soft">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Heart className="h-5 w-5 text-primary" />
-                  Digital Wardrobe
-                </CardTitle>
-                <CardDescription>
-                  Track your clothes - what's at home vs. in laundry
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {digitalWardrobe.map((item, index) => {
-                    const statusInfo = getWardrobiStatus(item.status);
-                    return (
-                      <div key={index} className="border rounded-lg p-4 hover:shadow-soft transition-shadow">
-                        <div className="flex justify-between items-start mb-2">
-                          <p className="font-semibold">{item.item}</p>
-                          <Badge variant="secondary" className={statusInfo.color}>
-                            {statusInfo.label}
-                          </Badge>
-                        </div>
-                        <p className="text-sm text-muted-foreground">
-                          {item.status === "at-home" 
-                            ? `Last washed: ${item.lastWashed}`
-                            : `Picked up: ${item.pickupDate}`
-                          }
-                        </p>
-                      </div>
-                    );
-                  })}
-                </div>
               </CardContent>
             </Card>
           </TabsContent>
@@ -616,12 +811,52 @@ const Account = () => {
                   <Label>Start date</Label>
                   <Input type="date" value={weeklyStart} onChange={(e) => setWeeklyStart(e.target.value)} />
                 </div>
+                {savedProfileAddress && (
+                  <div className="flex items-center space-x-2 pt-1">
+                    <input
+                      type="checkbox"
+                      id="weekly-use-saved-address"
+                      className="rounded border-gray-300"
+                      checked={useWeeklySavedAddress}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setUseWeeklySavedAddress(checked);
+                        if (checked) {
+                          setWeeklyAddress(savedProfileAddress);
+                        }
+                      }}
+                    />
+                    <Label htmlFor="weekly-use-saved-address" className="text-sm">
+                      Use my saved address
+                    </Label>
+                  </div>
+                )}
+                <div>
+                  <Label>Pickup address</Label>
+                  <Input
+                    value={weeklyAddress}
+                    onChange={(e) => setWeeklyAddress(e.target.value)}
+                    className="mt-1"
+                    placeholder="Enter pickup address"
+                  />
+                </div>
               </div>
               <div className="mt-5 flex justify-end gap-2">
                 <Button variant="outline" onClick={() => setShowWeeklyModal(false)}>Cancel</Button>
                 <Button onClick={async () => {
                   try {
-                    await api.subscriptions.weeklyPickup({ dayOfWeek: weeklyDow, startDate: weeklyStart, pickupTime: weeklyTime });
+                    const addr = (weeklyAddress || '').trim();
+                    if (!addr) {
+                      alert('Please enter pickup address');
+                      return;
+                    }
+                    await api.subscriptions.weeklyPickup({
+                      dayOfWeek: weeklyDow,
+                      startDate: weeklyStart,
+                      pickupTime: weeklyTime,
+                      pickupAddress: addr,
+                      deliveryAddress: addr,
+                    });
                     const mine = await api.subscriptions.mine();
                     setSubs(mine || []);
                     setShowWeeklyModal(false);
@@ -653,12 +888,51 @@ const Account = () => {
                   <Label>Start date</Label>
                   <Input type="date" value={dailyStart} onChange={(e) => setDailyStart(e.target.value)} />
                 </div>
+                {savedProfileAddress && (
+                  <div className="flex items-center space-x-2 pt-1">
+                    <input
+                      type="checkbox"
+                      id="daily-use-saved-address"
+                      className="rounded border-gray-300"
+                      checked={useDailySavedAddress}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setUseDailySavedAddress(checked);
+                        if (checked) {
+                          setDailyAddress(savedProfileAddress);
+                        }
+                      }}
+                    />
+                    <Label htmlFor="daily-use-saved-address" className="text-sm">
+                      Use my saved address
+                    </Label>
+                  </div>
+                )}
+                <div>
+                  <Label>Pickup address</Label>
+                  <Input
+                    value={dailyAddress}
+                    onChange={(e) => setDailyAddress(e.target.value)}
+                    className="mt-1"
+                    placeholder="Enter pickup address"
+                  />
+                </div>
               </div>
               <div className="mt-5 flex justify-end gap-2">
                 <Button variant="outline" onClick={() => setShowDailyModal(false)}>Cancel</Button>
                 <Button onClick={async () => {
                   try {
-                    await api.subscriptions.dailyPickup({ startDate: dailyStart, pickupTime: dailyTime });
+                    const addr = (dailyAddress || '').trim();
+                    if (!addr) {
+                      alert('Please enter pickup address');
+                      return;
+                    }
+                    await api.subscriptions.dailyPickup({
+                      startDate: dailyStart,
+                      pickupTime: dailyTime,
+                      pickupAddress: addr,
+                      deliveryAddress: addr,
+                    });
                     const mine = await api.subscriptions.mine();
                     setSubs(mine || []);
                     setShowDailyModal(false);

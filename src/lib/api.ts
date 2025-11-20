@@ -18,19 +18,39 @@ async function request(path: string, options: RequestInit = {}) {
 
 export const api = {
   auth: {
-    signup: (data: { username: string; email: string; phone: string; password: string; userType: 'user' | 'admin' }) =>
+    signup: (data: {
+      username: string;
+      email: string;
+      phone: string;
+      password: string;
+      userType: 'user' | 'admin' | 'staff';
+      address?: string;
+    }) =>
       request('/api/auth/signup', { method: 'POST', body: JSON.stringify(data) }),
-    login: (data: { identifier?: string; email?: string; username?: string; password: string; userType?: 'user' | 'admin' }) =>
+    login: (data: {
+      identifier?: string;
+      email?: string;
+      username?: string;
+      password: string;
+      userType?: 'user' | 'admin' | 'staff';
+    }) =>
       request('/api/auth/login', { method: 'POST', body: JSON.stringify(data) }),
     me: () => request('/api/auth/me', { method: 'GET' }),
+    updateMe: (data: { username?: string; email?: string; phone?: string; address?: string }) =>
+      request('/api/auth/me', { method: 'PUT', body: JSON.stringify(data) }),
   },
   bookings: {
     create: (data: any) => request('/api/bookings', { method: 'POST', body: JSON.stringify(data) }),
     getById: (id: string) => request(`/api/bookings/${id}`, { method: 'GET' }),
     mine: () => request('/api/bookings', { method: 'GET' }),
+    staffMine: () => request('/api/bookings/staff/my-orders', { method: 'GET' }),
     adminAll: () => request('/api/bookings/admin/all', { method: 'GET' }),
     updateStatus: (id: string, payload: { status?: string; paymentStatus?: string; assignedStaff?: any }) =>
       request(`/api/bookings/${id}/status`, { method: 'PATCH', body: JSON.stringify(payload) }),
+    addFeedback: (id: string, payload: { rating: number; message: string }) =>
+      request(`/api/bookings/${id}/feedback`, { method: 'POST', body: JSON.stringify(payload) }),
+    publicFeedback: (limit: number = 6) =>
+      request(`/api/bookings/public/feedback?limit=${limit}`, { method: 'GET' }),
   },
   users: {
     list: () => request('/api/users', { method: 'GET' }),

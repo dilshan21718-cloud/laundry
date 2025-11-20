@@ -98,6 +98,7 @@ router.post('/daily-pickup', auth, async (req, res) => {
       existing.startDate = start;
       existing.notes = notes || '';
       existing.pickupTime = pickupTime || '';
+      if (pickupAddress) existing.pickupAddress = pickupAddress;
       const runsUpd = calcDailyRuns(start);
       existing.runs = runsUpd;
       existing.runStates = runsUpd.map((dt) => ({ date: dt, status: 'scheduled' }));
@@ -119,8 +120,8 @@ router.post('/daily-pickup', auth, async (req, res) => {
       estimatedDelivery: '',
       pickupTime: '',
       deliveryTime: '',
-      pickupAddress: pickupAddress || req.user?.address || 'Address on file',
-      deliveryAddress: deliveryAddress || req.user?.address || 'Address on file',
+      pickupAddress: pickupAddress || 'Address on file',
+      deliveryAddress: deliveryAddress || pickupAddress || 'Address on file',
       items: [],
       instructions: notes || 'Daily pickup subscription',
       donationPickup: false,
@@ -141,6 +142,7 @@ router.post('/daily-pickup', auth, async (req, res) => {
       createdBookingId: id,
       notes: notes || '',
       pickupTime: pickupTime || '',
+      pickupAddress: pickupAddress || 'Address on file',
       runs,
       nextRun: runs && runs.length ? runs[0] : null,
       runStates,
@@ -170,6 +172,7 @@ router.post('/weekly-pickup', auth, async (req, res) => {
       existing.startDate = start;
       existing.notes = notes || '';
       existing.pickupTime = pickupTime || '';
+      if (pickupAddress) existing.pickupAddress = pickupAddress;
       const runsUpd = calcMonthlyRuns(dayOfWeek, start);
       existing.runs = runsUpd;
       existing.runStates = runsUpd.map((dt) => ({ date: dt, status: 'scheduled' }));
@@ -272,8 +275,8 @@ router.post('/:id/generate-next', auth, async (req, res) => {
       estimatedDelivery: '',
       pickupTime: '',
       deliveryTime: '',
-      pickupAddress: 'Address on file',
-      deliveryAddress: 'Address on file',
+      pickupAddress: base.pickupAddress || 'Address on file',
+      deliveryAddress: base.pickupAddress || 'Address on file',
       items: [],
       instructions: base.notes || 'Weekly pickup subscription',
       donationPickup: false,
@@ -294,6 +297,7 @@ router.post('/:id/generate-next', auth, async (req, res) => {
       createdBookingId: idCode,
       notes: base.notes || '',
       pickupTime: base.pickupTime || '',
+      pickupAddress: base.pickupAddress || 'Address on file',
       runs,
       runStates,
       nextRun: runs && runs.length ? runs[0] : null,
